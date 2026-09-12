@@ -1240,6 +1240,7 @@ void get_pairs_nd_3(
     // never propagated to get_pairs until now.
     double gp_inv_box[8] = {0.0};
     for (std::size_t d = 0; d < Ndim; ++d) gp_inv_box[d] = 1.0 / box[d];
+    const bool periodic_x = walls[0] == 0;
 
     // Cycle 25: build (j, x[j*Ndim+0]) packed array for cell-walk.
     // Measured per-x-load cost in this code was ~2.4 cyc per cand; cell-walk
@@ -1334,10 +1335,16 @@ void get_pairs_nd_3(
                 // wrap as a single conditional sub/add.
                 std::ptrdiff_t signed_pos =
                     static_cast<std::ptrdiff_t>(sort_loc[i]) + delta;
-                if (signed_pos < 0)
-                    signed_pos += static_cast<std::ptrdiff_t>(N);
-                else if (signed_pos >= static_cast<std::ptrdiff_t>(N))
-                    signed_pos -= static_cast<std::ptrdiff_t>(N);
+                if (signed_pos < 0 || signed_pos >= static_cast<std::ptrdiff_t>(N)) {
+                    if (!periodic_x) {
+                        go = false;
+                        break;
+                    }
+                    if (signed_pos < 0)
+                        signed_pos += static_cast<std::ptrdiff_t>(N);
+                    else
+                        signed_pos -= static_cast<std::ptrdiff_t>(N);
+                }
                 std::size_t pos = static_cast<std::size_t>(signed_pos);
                 // Cycle 25: read packed (j, x[j*Ndim+0]) in a single 16-byte
                 // load. Eliminates the separate x[jbase] cache line load on
@@ -1347,7 +1354,8 @@ void get_pairs_nd_3(
                 const PackedSortEntry& pe = packed_sort_data[pos];
                 const std::size_t j = pe.j;
                 double dx = pe.x0 - xi0;
-                dx -= std::nearbyint(dx * gp_inv_box[0]) * box[0];
+                if (periodic_x)
+                    dx -= std::nearbyint(dx * gp_inv_box[0]) * box[0];
 
                 bool first_dim_pass = (std::fabs(dx) <= r_c_max);
                 if (!first_dim_pass) { go = false; break; }
@@ -1361,14 +1369,17 @@ void get_pairs_nd_3(
                     double d2 = dx * dx;
                     if (Ndim == 3) {
                         double dy = x[jbase + 1] - xi1;
-                        dy -= std::nearbyint(dy * gp_inv_box[1]) * box[1];
+                        if (walls[1] == 0)
+                            dy -= std::nearbyint(dy * gp_inv_box[1]) * box[1];
                         double dz = x[jbase + 2] - xi2;
-                        dz -= std::nearbyint(dz * gp_inv_box[2]) * box[2];
+                        if (walls[2] == 0)
+                            dz -= std::nearbyint(dz * gp_inv_box[2]) * box[2];
                         d2 += dy * dy + dz * dz;
                     } else {
                         for (std::size_t d = 1; d < Ndim; ++d) {
                             double dz = x[jbase + d] - x[ibase + d];
-                            dz -= std::nearbyint(dz * gp_inv_box[d]) * box[d];
+                            if (walls[d] == 0)
+                                dz -= std::nearbyint(dz * gp_inv_box[d]) * box[d];
                             d2 += dz * dz;
                         }
                     }
@@ -1474,7 +1485,6 @@ void get_pairs_nd_3(
     }
 
     ++g_pairs_version;
-    (void)walls;
 }
 
 // ============================================================================
@@ -1568,7 +1578,8 @@ static void rcp_sentinel_check(
             double d2 = 0.0;
             for (std::size_t d = 0; d < Ndim; ++d) {
                 double delta = xj[d] - xi[d];
-                delta -= std::nearbyint(delta * inv_box[d]) * box[d];
+                if (walls[d] == 0)
+                    delta -= std::nearbyint(delta * inv_box[d]) * box[d];
                 d2 += delta * delta;
             }
             if (d2 >= r_ij * r_ij) continue;   // not force-generating
@@ -2729,7 +2740,9 @@ struct ImageSet {
 };
 
 static ImageSet compute_image_set(const double* xi, double r,
-                                  const double* box, std::size_t Ndim) {
+                                  const double* box,
+                                  const std::int8_t* walls,
+                                  std::size_t Ndim) {
     // Query at xq = xi + m·box, looking for particles whose unwrapped
     // position is within r of xq. The relevant offset m for axis d is:
     //   - m = 0 always (look for nearby in same cell)
@@ -2745,8 +2758,10 @@ static ImageSet compute_image_set(const double* xi, double r,
     for (std::size_t d = 0; d < Ndim; ++d) {
         std::uint8_t c = 0;
         s.offsets[d][c++] = 0;
-        if (xi[d] < r) s.offsets[d][c++] = +1;
-        if (xi[d] > box[d] - r) s.offsets[d][c++] = -1;
+        if (walls[d] == 0) {
+            if (xi[d] < r) s.offsets[d][c++] = +1;
+            if (xi[d] > box[d] - r) s.offsets[d][c++] = -1;
+        }
         s.counts[d] = c;
         s.total_images *= c;
     }
@@ -3226,7 +3241,7 @@ void get_pairs_kdtree(
             const std::uint64_t tsc_img0 = kd_probe_on ? rcp_read_cycles() : 0;
             const double* xi = x + i * Ndim;
             const ImageSet img = compute_image_set(
-                xi, r_c_max + kd_radius_inflation, box.data(), Ndim);
+                xi, r_c_max + kd_radius_inflation, box.data(), walls.data(), Ndim);
             if (kd_probe_on) tls_kd_image += rcp_read_cycles() - tsc_img0;
 
             // Iterate the cartesian product of per-axis image offsets.
@@ -3279,15 +3294,19 @@ void get_pairs_kdtree(
                         double dd0 = xj[0] - xi[0];
                         double dd1 = xj[1] - xi[1];
                         double dd2 = xj[2] - xi[2];
-                        dd0 -= std::nearbyint(dd0 * inv_box_kd[0]) * box[0];
-                        dd1 -= std::nearbyint(dd1 * inv_box_kd[1]) * box[1];
-                        dd2 -= std::nearbyint(dd2 * inv_box_kd[2]) * box[2];
+                        if (walls[0] == 0)
+                            dd0 -= std::nearbyint(dd0 * inv_box_kd[0]) * box[0];
+                        if (walls[1] == 0)
+                            dd1 -= std::nearbyint(dd1 * inv_box_kd[1]) * box[1];
+                        if (walls[2] == 0)
+                            dd2 -= std::nearbyint(dd2 * inv_box_kd[2]) * box[2];
                         d2 = dd0*dd0 + dd1*dd1 + dd2*dd2;
                     } else {
                         d2 = 0.0;
                         for (std::size_t d = 0; d < Ndim; ++d) {
                             double dd = x[j * Ndim + d] - xi[d];
-                            dd -= std::nearbyint(dd * inv_box_kd[d]) * box[d];
+                            if (walls[d] == 0)
+                                dd -= std::nearbyint(dd * inv_box_kd[d]) * box[d];
                             d2 += dd * dd;
                         }
                     }
@@ -3516,8 +3535,6 @@ void get_pairs_kdtree(
     }
 
     ++g_pairs_version;
-    (void)walls;
-
     if (kd_probe_on) {
         g_kd_total_cycles.fetch_add(rcp_read_cycles() - kd_tsc_fn_start,
                                     std::memory_order_relaxed);
@@ -3642,10 +3659,10 @@ void get_forces_nd_3(
     max_min_dist = 0;
     bool circle_flag = (walls[0] < 0);
 
-    bool no_walls = true;
+    bool fully_periodic = true;
     for (std::size_t d = 0; d < Ndim; ++d) {
         if (walls[d] != 0) {
-            no_walls = false;
+            fully_periodic = false;
         }
     }
 
@@ -3741,6 +3758,7 @@ void get_forces_nd_3(
     const double*     x_data       = x;
     const double*     D_data       = D.data();
     const double*     box_data     = box.data();
+    const std::int8_t* walls_data  = walls.data();
     // Cycle 9: precompute 1/box per dim so the per-pair MIC wrap becomes
     // floor(delta * inv_box + 0.5) * box instead of floor(delta / box + 0.5)
     // * box. Replaces a division per pair-dim with a multiplication.
@@ -3759,14 +3777,14 @@ void get_forces_nd_3(
     // Cycle 21: SIMD reject-test eligibility, resolved once per call.
     const bool use_simd3 =
 #if defined(__AVX512F__)
-        rcp_force_simd() && Ndim == 3 && extra_mic == 0;
+        rcp_force_simd() && fully_periodic && Ndim == 3 && extra_mic == 0;
 #else
         false;
 #endif
     // Cycle 21f: 2D variant (same structure, two coordinate gathers).
     const bool use_simd2 =
 #if defined(__AVX512F__)
-        rcp_force_simd() && Ndim == 2 && extra_mic == 0;
+        rcp_force_simd() && fully_periodic && Ndim == 2 && extra_mic == 0;
 #else
         false;
 #endif
@@ -3791,7 +3809,7 @@ void get_forces_nd_3(
     }
     const float* x_shadow = use_fp32_stub ? g_x_shadow.data() : nullptr;
     #pragma omp parallel default(none) \
-        shared(x_data, pairs_data, pair_offsets, D_data, box_data, inv_box, \
+        shared(x_data, pairs_data, pair_offsets, D_data, box_data, walls_data, inv_box, \
                F_data, z_data, N, Ndim, K, F_stride, z_stride, \
                g_floop_cycles, g_floop_candidates, g_floop_overlaps, \
                g_floop_test_cycles, g_floop_overlap_cycles, probe, \
@@ -4096,10 +4114,12 @@ void get_forces_nd_3(
                     // Cycle 16d: nearbyint compiles to single vroundsd
                     // (saves the +0.5 op and any sign-handling that floor()
                     // might need). Same MIC math, slightly cheaper.
-                    delta -= std::nearbyint(delta * inv_box[d]) * box_data[d];
-                    for (int k = 0; k < extra_mic; ++k) {
-                        delta += mic_scale *
-                                 std::nearbyint(delta * inv_box[d]) * box_data[d];
+                    if (walls_data[d] == 0) {
+                        delta -= std::nearbyint(delta * inv_box[d]) * box_data[d];
+                        for (int k = 0; k < extra_mic; ++k) {
+                            delta += mic_scale *
+                                     std::nearbyint(delta * inv_box[d]) * box_data[d];
+                        }
                     }
                     dx_local[d] = delta;
                     d2 += delta * delta;
@@ -4195,7 +4215,7 @@ void get_forces_nd_3(
     count = 1 + count_red;
     max_min_dist = max_min_red;
 
-    if (~no_walls) {
+    if (!fully_periodic) {
 
         for (std::size_t i = 0; i < N; ++i) {
             for (std::size_t d = 0; d < Ndim; ++d) {
@@ -4456,6 +4476,8 @@ std::pair<PackingResult, PackingTrace> run_packing_observed(
 
         phi_modifier = sphere_volume(1 / 2., -walls[0]);
     }
+    const bool fully_periodic = std::all_of(
+        walls.begin(), walls.end(), [](std::int8_t value) { return value == 0; });
 
     if (fix_height)
     {
@@ -6343,7 +6365,7 @@ std::pair<PackingResult, PackingTrace> run_packing_observed(
             }
         }
         g_t_adam.begin();
-        if (rcp_fused_adam() && method != "Verlet") {
+        if (rcp_fused_adam() && fully_periodic && method != "Verlet") {
             // Cycle 21c: particle ADAM is fused into the position pass
             // below (identical per-element math, m_hat/v_hat carried in
             // registers instead of round-tripping through memory). Only
@@ -6513,8 +6535,10 @@ std::pair<PackingResult, PackingTrace> run_packing_observed(
                     const double vhk = vk * inv_b2_corr;
                     double xv = xd[idx] - alpha_k * mhk / (std::sqrt(vhk) + epsilon);
                     const double L = box_data[kk];
-                    if (xv >= L)     xv -= L;
-                    else if (xv < 0) xv += L;
+                    if (walls[kk] == 0) {
+                        if (xv >= L)     xv -= L;
+                        else if (xv < 0) xv += L;
+                    }
                     xd[idx] = xv;
                 }
             }
@@ -6564,8 +6588,10 @@ std::pair<PackingResult, PackingTrace> run_packing_observed(
                 for (std::size_t d = 0; d < Ndim; ++d) {
                     double v = xd[base + d];
                     const double L = box_data[d];
-                    if (v >= L)      v -= L;
-                    else if (v < 0)  v += L;
+                    if (walls[d] == 0) {
+                        if (v >= L)      v -= L;
+                        else if (v < 0)  v += L;
+                    }
                     xd[base + d] = v;
                 }
             }

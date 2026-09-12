@@ -19,7 +19,7 @@
 #include <vector>
 
 #define main legacy_initialize_particles_main
-#include "../../InitializeParticles.cpp"
+#include "../../../legacy/c++/InitializeParticles.cpp"
 #undef main
 
 namespace {
