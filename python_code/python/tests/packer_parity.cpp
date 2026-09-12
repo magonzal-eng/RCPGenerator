@@ -22,7 +22,7 @@
 #include <omp.h>
 
 #define main legacy_rcp_generator_main
-#include "../../RCPGenerator.cpp"
+#include "../../../legacy/c++/RCPGenerator.cpp"
 #undef main
 
 namespace {
