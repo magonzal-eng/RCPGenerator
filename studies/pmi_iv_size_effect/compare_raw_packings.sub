@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --job-name=pmi-raw-40-50-400
+#SBATCH --account=gonza226
+#SBATCH --partition=cpu
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=16000M
+#SBATCH --time=06:00:00
+#SBATCH --output=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.out
+#SBATCH --error=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.err
+set -euo pipefail
+export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 BLIS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+export OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE PYTHONHASHSEED=0 PYTHONUNBUFFERED=1
+V=/scratch/gautschi/gonza226/pmi_raw_packings_venv
+python -m venv "$V"
+source "$V/bin/activate"
+python -m pip install -q -U pip setuptools wheel cmake ninja pybind11 numpy scipy matplotlib
+python -m pip install -q /home/gonza226/multiparticle_die_solver/pmi_400k_size_effect_20261001/RCPGenerator/python_code/python
+python /home/gonza226/multiparticle_die_solver/pmi_raw_packings_40k_50k_400k_20261002/compare_raw_packings.py
