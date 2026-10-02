@@ -1,0 +1,17 @@
+#!/bin/bash
+#SBATCH --job-name=pmi400k-hertz0
+#SBATCH --account=gonza226
+#SBATCH --partition=cpu
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=16000M
+#SBATCH --time=2-00:00:00
+#SBATCH --output=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.out
+#SBATCH --error=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.err
+set -euo pipefail
+export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 BLIS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+export OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE PYTHONHASHSEED=0 PYTHONUNBUFFERED=1
+PY=/home/gonza226/multiparticle_die_solver/.venv/bin/python
+"$PY" /home/gonza226/multiparticle_die_solver/pmi_400k_hertz_relax_20261002/relax_400k_hertz.py
