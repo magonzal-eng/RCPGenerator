@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH --job-name=pmi50k-tight
+#SBATCH --account=gonza226
+#SBATCH --partition=cpu
+#SBATCH --qos=normal
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2000M
+#SBATCH --time=01:00:00
+#SBATCH --output=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.out
+#SBATCH --error=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.err
+set -euo pipefail
+module load python/3.11.9 gcc/14.1.0
+source /scratch/gautschi/gonza226/pmi_400k_size_effect_venv/bin/activate
+export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 BLIS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+export OMP_NUM_THREADS=1 OMP_DYNAMIC=FALSE PYTHONHASHSEED=0 PYTHONUNBUFFERED=1
+export RCP_OSC_OV_THRESH=5e-5
+cd /home/gonza226/multiparticle_die_solver/pmi_raw50k_tightov_20261002
+python generate_50k_tighter_overlap.py
