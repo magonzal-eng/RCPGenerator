@@ -1,0 +1,38 @@
+name: PMI 400k size-effect packing
+on:
+  push:
+    branches: [pmi-400k-size-effect-20261001]
+    paths:
+      - 'studies/pmi_iv_size_effect/generate_400k.py'
+      - '.github/workflows/pmi-400k-size-effect.yml'
+jobs:
+  generate:
+    runs-on: self-hosted
+    timeout-minutes: 3600
+    steps:
+      - uses: actions/checkout@v4
+      - name: Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          module load python/3.11.9 gcc/14.1.0 || true
+          python -m venv /scratch/gautschi/gonza226/pmi_400k_size_effect_venv
+          source /scratch/gautschi/gonza226/pmi_400k_size_effect_venv/bin/activate
+          python -m pip install -U pip setuptools wheel cmake ninja pybind11 numpy scipy
+          python -m pip install ./python_code/python
+      - name: Generate and postprocess 400k packing
+        shell: bash
+        env:
+          RCP_THREADS: '1'
+        run: |
+          set -euo pipefail
+          source /scratch/gautschi/gonza226/pmi_400k_size_effect_venv/bin/activate
+          python studies/pmi_iv_size_effect/generate_400k.py
+      - name: Export small evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pmi-400k-size-effect-evidence
+          path: |
+            /scratch/gautschi/gonza226/pmi_400k_size_effect_20261001/metadata.json
+            /scratch/gautschi/gonza226/pmi_400k_size_effect_20261001/pair_distribution_400k.npz
+          retention-days: 14
