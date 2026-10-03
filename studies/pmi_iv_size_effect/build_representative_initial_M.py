@@ -3,6 +3,7 @@ import json, math, time
 import numpy as np
 from scipy.interpolate import UnivariateSpline
 from scipy.integrate import cumulative_trapezoid
+from scipy.optimize import root
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter, NullFormatter
 
@@ -99,7 +100,39 @@ raw=np.exp(np.clip(sp(ug),-745,700))
 # normalize conditional gap density in x
 pg=raw/np.trapezoid(raw,xg)
 
-# Empirical gap validation on common negative bins.
+# Preserve the equal-realization pooled first and second conditional gap moments.
+# Apply the minimum-KL exponential tilt p* propto p exp(lambda1*y+lambda2*y^2),
+# y=x/0.5, so the smooth fit retains the empirical gap CDF shape while exactly
+# restoring the first two pooled radial moments.
+target_gap_mean=float(np.mean([np.mean(data[n]['gaps']) for n in VALID]))
+target_gap_mean2=float(np.mean([np.mean(data[n]['gaps']**2) for n in VALID]))
+base_gap_mean=float(np.trapezoid(xg*pg,xg))
+base_gap_mean2=float(np.trapezoid(xg*xg*pg,xg))
+ys=xg/0.5
+target_y1=target_gap_mean/0.5
+target_y2=target_gap_mean2/(0.5**2)
+
+def tilt_distribution(lam):
+    expo=np.clip(lam[0]*ys+lam[1]*ys*ys,-100,100)
+    pp=pg*np.exp(expo)
+    pp/=np.trapezoid(pp,xg)
+    return pp
+
+def tilt_residual(lam):
+    pp=tilt_distribution(lam)
+    return np.array([
+        np.trapezoid(ys*pp,xg)-target_y1,
+        np.trapezoid(ys*ys*pp,xg)-target_y2,
+    ])
+
+tilt_solution=root(tilt_residual,np.zeros(2),method='hybr')
+if not tilt_solution.success:
+    raise RuntimeError('gap moment tilt failed: '+str(tilt_solution.message))
+pg=tilt_distribution(tilt_solution.x)
+tilted_gap_mean=float(np.trapezoid(xg*pg,xg))
+tilted_gap_mean2=float(np.trapezoid(xg*xg*pg,xg))
+
+# Empirical pooling reproducibility on common negative bins.
 def gap_metrics(sample):
     c,_=np.histogram(sample,bins=edges)
     p=c/c.sum()
@@ -107,6 +140,21 @@ def gap_metrics(sample):
     ks=float(np.max(np.abs(np.cumsum(p)-np.cumsum(mean_prob))))
     return dict(L1=l1,TV=0.5*l1,KS=ks)
 gap_validation={n:gap_metrics(data[n]['gaps']) for n in data}
+
+# Validate the final smooth moment-corrected gap fit itself against each packing.
+cdf_pg=np.r_[0.0,cumulative_trapezoid(pg,xg)]
+cdf_pg/=cdf_pg[-1]
+cdf_edges=np.interp(edges,xg,cdf_pg,left=0.0,right=1.0)
+fit_bin_prob=np.maximum(0.0,np.diff(cdf_edges))
+fit_bin_prob/=fit_bin_prob.sum()
+
+def gap_fit_metrics(sample):
+    c,_=np.histogram(sample,bins=edges)
+    p=c/c.sum()
+    l1=float(np.sum(np.abs(p-fit_bin_prob)))
+    ks=float(np.max(np.abs(np.cumsum(p)-np.cumsum(fit_bin_prob))))
+    return dict(L1=l1,TV=0.5*l1,KS=ks)
+gap_fit_validation={n:gap_fit_metrics(data[n]['gaps']) for n in data}
 
 # Helpers for smooth C2 model.
 def smoothstep5(t):
@@ -199,14 +247,14 @@ for n in VALID:
         mean_x=float(np.mean(xx)),
         mean_x2=float(np.mean(xx**2)),
         contact_fraction=float(data[n]['contact_fraction']),
-        hertz_moment=float(np.mean(np.where(xx>0,xx**1.5,0.0))),
+        hertz_moment=float(np.sum(xx[xx>0]**1.5)/len(xx)),
     )
 # representative moments
 rep=dict(
     mean_x=float(np.trapezoid(xout*pout,xout)),
     mean_x2=float(np.trapezoid(xout*xout*pout,xout)),
     contact_fraction_target=chi,
-    hertz_moment=float(np.trapezoid(np.where(xout>0,xout**1.5,0.0)*pout,xout)),
+    hertz_moment=float(np.trapezoid(np.clip(xout,0.0,None)**1.5*pout,xout)),
 )
 
 summary=dict(
@@ -225,7 +273,19 @@ summary=dict(
         log_density_spline=True,
         scipy_smoothing_s=S,
         merged_bins=int(len(xc)),
-        validation=gap_validation,
+        empirical_pool_validation=gap_validation,
+        smooth_fit_validation=gap_fit_validation,
+        moment_correction=dict(
+            method='minimum-KL exponential tilt in y=x/0.5',
+            lambda1=float(tilt_solution.x[0]),
+            lambda2=float(tilt_solution.x[1]),
+            target_gap_mean=target_gap_mean,
+            target_gap_mean2=target_gap_mean2,
+            pre_tilt_gap_mean=base_gap_mean,
+            pre_tilt_gap_mean2=base_gap_mean2,
+            post_tilt_gap_mean=tilted_gap_mean,
+            post_tilt_gap_mean2=tilted_gap_mean2,
+        ),
     ),
     regularization_family=family,
     selected_epsilon=eps_sel,
