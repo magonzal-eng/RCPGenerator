@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=2500M
+#SBATCH --mem=2000M
 #SBATCH --time=00:30:00
 #SBATCH --output=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.out
 #SBATCH --error=/home/gonza226/chatgpt-gateway/logs/chatgpt-%j.err
